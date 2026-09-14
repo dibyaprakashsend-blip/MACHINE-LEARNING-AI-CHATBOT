@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.prompts import ChatPromptTemplate
@@ -15,10 +16,15 @@ from fastembed import TextEmbedding
 
 
 # ============================================================
-# 1. LOAD ENVIRONMENT VARIABLES
+# 1. PROJECT PATH
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+# ============================================================
+# 2. LOAD ENVIRONMENT VARIABLES
+# ============================================================
 
 env_file = BASE_DIR / ".env"
 
@@ -35,23 +41,34 @@ if not GOOGLE_API_KEY:
     raise RuntimeError(
         "GOOGLE_API_KEY was not found. "
         "Add GOOGLE_API_KEY to your .env file locally "
-        "or Render Environment Variables in production."
+        "or add it to Render Environment Variables."
     )
 
 
 # ============================================================
-# 2. CREATE FASTAPI APP
+# 3. FASTAPI APP
 # ============================================================
 
 app = FastAPI(
     title="AI College Study Assistant",
-    description="AI College Study Assistant using RAG, Chroma, FastEmbed and Gemini",
+    description=(
+        "AI College Study Assistant using "
+        "RAG, Chroma, FastEmbed and Gemini"
+    ),
     version="1.0.0"
 )
 
 
 # ============================================================
-# 3. CORS
+# 4. REQUEST MODEL
+# ============================================================
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+# ============================================================
+# 5. CORS
 # ============================================================
 
 app.add_middleware(
@@ -64,7 +81,7 @@ app.add_middleware(
 
 
 # ============================================================
-# 4. FASTEMBED EMBEDDING CLASS
+# 6. FASTEMBED EMBEDDING CLASS
 # ============================================================
 
 class FastEmbedEmbeddings(Embeddings):
@@ -98,14 +115,14 @@ class FastEmbedEmbeddings(Embeddings):
 
 
 # ============================================================
-# 5. LOAD EMBEDDING MODEL
+# 7. LOAD EMBEDDING MODEL
 # ============================================================
 
 embedding_model = FastEmbedEmbeddings()
 
 
 # ============================================================
-# 6. LOAD CHROMA DATABASE
+# 8. CHROMA DATABASE PATH
 # ============================================================
 
 CHROMA_PATH = BASE_DIR / "chroma_database"
@@ -120,6 +137,10 @@ if not CHROMA_PATH.exists():
     )
 
 
+# ============================================================
+# 9. LOAD CHROMA DATABASE
+# ============================================================
+
 print("\nLoading Chroma database...")
 
 vectorstore = Chroma(
@@ -132,7 +153,7 @@ print("Chroma database loaded successfully!")
 
 
 # ============================================================
-# 7. CHECK CHROMA DATABASE
+# 10. CHECK CHROMA DATABASE
 # ============================================================
 
 try:
@@ -153,7 +174,7 @@ except Exception as e:
 
 
 # ============================================================
-# 8. CREATE RETRIEVER
+# 11. RETRIEVER
 # ============================================================
 
 retriever = vectorstore.as_retriever(
@@ -167,7 +188,7 @@ retriever = vectorstore.as_retriever(
 
 
 # ============================================================
-# 9. GEMINI LLM
+# 12. GEMINI MODEL
 # ============================================================
 
 llm = ChatGoogleGenerativeAI(
@@ -177,7 +198,7 @@ llm = ChatGoogleGenerativeAI(
 
 
 # ============================================================
-# 10. RAG PROMPT
+# 13. RAG PROMPT
 # ============================================================
 
 prompt = ChatPromptTemplate.from_messages(
@@ -187,20 +208,21 @@ prompt = ChatPromptTemplate.from_messages(
             """
 You are an AI College Study Assistant.
 
-Answer the student's question using ONLY the information
-provided in the document context below.
+Answer the student's question using ONLY the
+information provided in the document context.
 
 Rules:
 
 1. Use only the provided document context.
 2. Do not invent information.
-3. If the answer is not present in the context, reply exactly:
+3. If the answer is not present in the context,
+   reply exactly:
 
 I could not find the answer in the document.
 
 4. Explain the answer clearly and simply.
 5. Use bullet points when useful.
-6. For educational questions, provide enough explanation
+6. For educational questions, give enough explanation
    for a college student to understand the topic.
 
 DOCUMENT CONTEXT:
@@ -217,16 +239,10 @@ DOCUMENT CONTEXT:
 
 
 # ============================================================
-# 11. HELPER FUNCTION
+# 14. NORMALIZE GEMINI RESPONSE
 # ============================================================
 
 def normalize_answer(content):
-
-    """
-    Gemini/LangChain can sometimes return different
-    content formats. This function converts them into
-    a normal string.
-    """
 
     if content is None:
         return ""
@@ -275,7 +291,7 @@ def normalize_answer(content):
 
 
 # ============================================================
-# 12. HOME ROUTE
+# 15. HOME ENDPOINT
 # ============================================================
 
 @app.get("/")
@@ -287,7 +303,7 @@ def home():
 
 
 # ============================================================
-# 13. HEALTH CHECK
+# 16. HEALTH ENDPOINT
 # ============================================================
 
 @app.get("/health")
@@ -312,24 +328,25 @@ def health():
 
 
 # ============================================================
-# 14. CHAT API
+# 17. CHAT ENDPOINT
 # ============================================================
 
 @app.post("/api/chat")
-async def chat(data: dict):
+async def chat(data: ChatRequest):
 
     try:
 
         # ----------------------------------------------------
-        # GET USER QUESTION
+        # GET USER MESSAGE
         # ----------------------------------------------------
 
-        user_message = data.get("message", "")
+        user_message = data.message.strip()
+
 
         if not user_message:
 
             return {
-                "error": "Please provide a message."
+                "error": "Please enter a message."
             }
 
 
@@ -369,7 +386,7 @@ async def chat(data: dict):
 
 
         # ----------------------------------------------------
-        # RAG DEBUGGING
+        # RAG DEBUG
         # ----------------------------------------------------
 
         print("\n")
@@ -416,13 +433,13 @@ async def chat(data: dict):
 
 
         # ----------------------------------------------------
-        # NO DOCUMENTS FOUND
+        # NO DOCUMENTS
         # ----------------------------------------------------
 
         if not docs:
 
             print(
-                "\nWARNING: No documents were retrieved."
+                "\nNo documents were retrieved."
             )
 
             return {
@@ -452,7 +469,7 @@ async def chat(data: dict):
 
 
         # ----------------------------------------------------
-        # DEBUG CONTEXT LENGTH
+        # CONTEXT DEBUG
         # ----------------------------------------------------
 
         print("\nContext length:")
@@ -483,7 +500,7 @@ async def chat(data: dict):
 
 
         # ----------------------------------------------------
-        # NORMALIZE GEMINI RESPONSE
+        # GET ANSWER
         # ----------------------------------------------------
 
         answer = normalize_answer(
@@ -507,6 +524,10 @@ async def chat(data: dict):
             )
 
 
+        # ----------------------------------------------------
+        # FINAL LOG
+        # ----------------------------------------------------
+
         print("\n")
         print("=" * 60)
         print("REQUEST COMPLETED")
@@ -514,7 +535,7 @@ async def chat(data: dict):
 
 
         # ----------------------------------------------------
-        # RETURN RESPONSE
+        # RETURN
         # ----------------------------------------------------
 
         return {
@@ -542,18 +563,37 @@ async def chat(data: dict):
 
 
 # ============================================================
-# 15. STARTUP INFORMATION
+# 18. STARTUP INFORMATION
 # ============================================================
 
 print("\n")
-print("=" * 60)
-print("       AI COLLEGE STUDY ASSISTANT")
+
 print("=" * 60)
 
-print("Backend      : FastAPI")
-print("Vector DB    : Chroma")
-print("Embeddings   : FastEmbed")
-print("Embedding    : BAAI/bge-small-en-v1.5")
-print("LLM          : Gemini 3.6 Flash")
+print(
+    "       AI COLLEGE STUDY ASSISTANT"
+)
+
+print("=" * 60)
+
+print(
+    "Backend      : FastAPI"
+)
+
+print(
+    "Vector DB    : Chroma"
+)
+
+print(
+    "Embeddings   : FastEmbed"
+)
+
+print(
+    "Embedding    : BAAI/bge-small-en-v1.5"
+)
+
+print(
+    "LLM          : Gemini 3.6 Flash"
+)
 
 print("=" * 60)
