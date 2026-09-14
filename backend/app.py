@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -47,6 +48,24 @@ app.add_middleware(
 
 
 # ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+FRONTEND_PATH = os.path.join(
+    BASE_DIR,
+    "frontend",
+    "index.html"
+)
+
+CHROMA_PATH = os.path.join(
+    BASE_DIR,
+    "chroma_database"
+)
+
+
+# ============================================================
 # EMBEDDING MODEL
 # ============================================================
 
@@ -65,11 +84,6 @@ print("FastEmbed model loaded successfully!")
 # CHROMA VECTOR DATABASE
 # ============================================================
 
-CHROMA_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "chroma_database"
-)
-
 print("=" * 60)
 print("Loading Chroma database...")
 print("=" * 60)
@@ -84,7 +98,7 @@ print("Chroma database loaded successfully!")
 
 
 # ============================================================
-# GEMINI LLM
+# GEMINI
 # ============================================================
 
 print("=" * 60)
@@ -108,20 +122,19 @@ class ChatRequest(BaseModel):
 
 
 # ============================================================
-# ROOT ENDPOINT
+# FRONTEND
 # ============================================================
 
-@app.get("/")
-def home():
-    return {
-        "message": "AI College Study Assistant is running",
-        "backend": "FastAPI",
-        "vector_database": "Chroma",
-        "embedding_model": "BAAI/bge-small-en-v1.5",
-        "llm": "Gemini 3.6 Flash",
-        "chat_endpoint": "/api/chat",
-        "health_endpoint": "/health"
-    }
+@app.get("/", include_in_schema=False)
+def frontend():
+
+    if not os.path.exists(FRONTEND_PATH):
+        return {
+            "error": "frontend/index.html was not found",
+            "expected_path": FRONTEND_PATH
+        }
+
+    return FileResponse(FRONTEND_PATH)
 
 
 # ============================================================
@@ -147,17 +160,13 @@ def health():
 
 
 # ============================================================
-# CHAT ENDPOINT
+# CHAT API
 # ============================================================
 
 @app.post("/api/chat")
 async def chat(data: ChatRequest):
 
     try:
-
-        # --------------------------------------------------------
-        # GET USER QUESTION
-        # --------------------------------------------------------
 
         user_message = data.message.strip()
 
@@ -173,9 +182,9 @@ async def chat(data: ChatRequest):
         print("Question:", user_message)
 
 
-        # --------------------------------------------------------
-        # CHECK CHROMA DATABASE
-        # --------------------------------------------------------
+        # ------------------------------------------------------
+        # DATABASE COUNT
+        # ------------------------------------------------------
 
         try:
             chroma_count = vectorstore._collection.count()
@@ -183,13 +192,9 @@ async def chat(data: ChatRequest):
             chroma_count = "unknown"
 
 
-        # --------------------------------------------------------
-        # RETRIEVE DOCUMENTS
-        # --------------------------------------------------------
-        #
-        # We retrieve 8 chunks instead of 4.
-        # This gives the LLM more relevant information.
-        #
+        # ------------------------------------------------------
+        # RETRIEVE RELEVANT DOCUMENTS
+        # ------------------------------------------------------
 
         docs = vectorstore.similarity_search(
             user_message,
@@ -197,9 +202,9 @@ async def chat(data: ChatRequest):
         )
 
 
-        # --------------------------------------------------------
+        # ------------------------------------------------------
         # RAG DEBUG
-        # --------------------------------------------------------
+        # ------------------------------------------------------
 
         print("\n")
         print("=" * 60)
@@ -228,9 +233,9 @@ async def chat(data: ChatRequest):
         print("=" * 60)
 
 
-        # --------------------------------------------------------
-        # CHECK IF DOCUMENTS WERE FOUND
-        # --------------------------------------------------------
+        # ------------------------------------------------------
+        # NO DOCUMENTS
+        # ------------------------------------------------------
 
         if not docs:
 
@@ -239,9 +244,9 @@ async def chat(data: ChatRequest):
             }
 
 
-        # --------------------------------------------------------
+        # ------------------------------------------------------
         # CREATE CONTEXT
-        # --------------------------------------------------------
+        # ------------------------------------------------------
 
         context_parts = []
 
@@ -272,30 +277,25 @@ SOURCE PAGE: {page_number}
         print("Context length:", len(context), "characters")
 
 
-        # --------------------------------------------------------
+        # ------------------------------------------------------
         # PROMPT
-        # --------------------------------------------------------
+        # ------------------------------------------------------
 
         prompt = f"""
 You are an AI College Study Assistant.
 
-Your job is to answer the student's question using the provided
-document context.
+Answer the student's question using the provided document context.
 
-IMPORTANT RULES:
+Rules:
 
 1. Use the document context as your primary source.
-2. Give a clear and simple answer.
-3. Explain difficult concepts in beginner-friendly language.
-4. Do not make up information that is not supported by the document.
-5. If the document contains enough information to answer the question,
-   answer it directly.
-6. If the exact answer is not present but the document provides
-   enough related information to explain the concept, use that
-   information carefully.
+2. Give a clear and beginner-friendly answer.
+3. Explain difficult concepts simply.
+4. Do not invent information.
+5. If the exact answer is present, answer it directly.
+6. If related information is present, use it to explain the concept.
 7. Mention the relevant page number when possible.
-8. Do not simply say "I could not find the answer" if the context
-   contains useful information related to the question.
+8. Do not unnecessarily say that the answer was not found.
 
 STUDENT QUESTION:
 
@@ -305,15 +305,13 @@ DOCUMENT CONTEXT:
 
 {context}
 
-Now answer the student's question.
-
-Give the answer in a clear format suitable for a college student.
+Now provide a clear answer suitable for a college student.
 """
 
 
-        # --------------------------------------------------------
-        # CALL GEMINI
-        # --------------------------------------------------------
+        # ------------------------------------------------------
+        # GEMINI
+        # ------------------------------------------------------
 
         print("\n")
         print("=" * 60)
@@ -322,16 +320,12 @@ Give the answer in a clear format suitable for a college student.
 
         response = llm.invoke(prompt)
 
-
-        # --------------------------------------------------------
-        # EXTRACT RESPONSE
-        # --------------------------------------------------------
-
         answer = response.content
 
 
-        # Sometimes Gemini/LangChain can return a list of objects.
-        # Convert it into normal text.
+        # ------------------------------------------------------
+        # NORMALIZE RESPONSE
+        # ------------------------------------------------------
 
         if isinstance(answer, list):
 
@@ -358,15 +352,14 @@ Give the answer in a clear format suitable for a college student.
 
             answer = "\n".join(text_parts)
 
-
         elif not isinstance(answer, str):
 
             answer = str(answer)
 
 
-        # --------------------------------------------------------
-        # GEMINI DEBUG
-        # --------------------------------------------------------
+        # ------------------------------------------------------
+        # RESPONSE DEBUG
+        # ------------------------------------------------------
 
         print("\n")
         print("=" * 60)
@@ -379,10 +372,6 @@ Give the answer in a clear format suitable for a college student.
         print("REQUEST COMPLETED")
         print("=" * 60)
 
-
-        # --------------------------------------------------------
-        # RETURN RESPONSE
-        # --------------------------------------------------------
 
         return {
             "response": answer
