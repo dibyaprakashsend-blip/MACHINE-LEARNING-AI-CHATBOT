@@ -1,56 +1,77 @@
 from pathlib import Path
 import os
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
 from dotenv import load_dotenv
 
-from fastembed import TextEmbedding
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.prompts import ChatPromptTemplate
-
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_chroma import Chroma
 
+from fastembed import TextEmbedding
+
 
 # ============================================================
-# PROJECT PATH
+# 1. LOAD ENVIRONMENT VARIABLES
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+env_file = BASE_DIR / ".env"
 
-# ============================================================
-# LOAD .ENV
-# ============================================================
+if env_file.exists():
+    load_dotenv(env_file)
+else:
+    load_dotenv()
 
-load_dotenv(BASE_DIR / ".env")
-
-
-# ============================================================
-# CHECK GOOGLE API KEY
-# ============================================================
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+
 if not GOOGLE_API_KEY:
-    raise ValueError(
-        "GOOGLE_API_KEY was not found in .env"
+    raise RuntimeError(
+        "GOOGLE_API_KEY was not found. "
+        "Add GOOGLE_API_KEY to your .env file locally "
+        "or Render Environment Variables in production."
     )
 
 
 # ============================================================
-# FASTEMBED EMBEDDINGS
+# 2. CREATE FASTAPI APP
+# ============================================================
+
+app = FastAPI(
+    title="AI College Study Assistant",
+    description="AI College Study Assistant using RAG, Chroma, FastEmbed and Gemini",
+    version="1.0.0"
+)
+
+
+# ============================================================
+# 3. CORS
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ============================================================
+# 4. FASTEMBED EMBEDDING CLASS
 # ============================================================
 
 class FastEmbedEmbeddings(Embeddings):
 
     def __init__(self):
 
-        print("Loading FastEmbed model...")
+        print("\nLoading FastEmbed model...")
 
         self.model = TextEmbedding(
             model_name="BAAI/bge-small-en-v1.5"
@@ -58,75 +79,33 @@ class FastEmbedEmbeddings(Embeddings):
 
         print("FastEmbed model loaded successfully!")
 
-
-    # --------------------------------------------------------
-    # EMBED DOCUMENTS
-    # --------------------------------------------------------
-
     def embed_documents(self, texts):
 
-        embeddings = self.model.embed(
-            texts
-        )
+        embeddings = self.model.embed(texts)
 
         return [
             embedding.tolist()
             for embedding in embeddings
         ]
 
-
-    # --------------------------------------------------------
-    # EMBED USER QUESTION
-    # --------------------------------------------------------
-
     def embed_query(self, text):
 
         embedding = list(
-            self.model.embed(
-                [text]
-            )
+            self.model.embed([text])
         )[0]
 
         return embedding.tolist()
 
 
 # ============================================================
-# FASTAPI APP
-# ============================================================
-
-app = FastAPI(
-    title="AI College Study Assistant",
-    description="AI Study Assistant using RAG, Chroma and Gemini",
-    version="1.0.0"
-)
-
-
-# ============================================================
-# CORS
-# ============================================================
-
-app.add_middleware(
-    CORSMiddleware,
-
-    allow_origins=["*"],
-
-    allow_credentials=True,
-
-    allow_methods=["*"],
-
-    allow_headers=["*"],
-)
-
-
-# ============================================================
-# EMBEDDING MODEL
+# 5. LOAD EMBEDDING MODEL
 # ============================================================
 
 embedding_model = FastEmbedEmbeddings()
 
 
 # ============================================================
-# CHROMA DATABASE
+# 6. LOAD CHROMA DATABASE
 # ============================================================
 
 CHROMA_PATH = BASE_DIR / "chroma_database"
@@ -135,10 +114,13 @@ CHROMA_PATH = BASE_DIR / "chroma_database"
 if not CHROMA_PATH.exists():
 
     raise RuntimeError(
-        "Chroma database was not found. "
-        "Run 'python vectorstore/database.py' first."
+        "Chroma database was not found.\n"
+        "Run this command locally first:\n\n"
+        "python vectorstore/database.py"
     )
 
+
+print("\nLoading Chroma database...")
 
 vectorstore = Chroma(
     collection_name="college_study_documents",
@@ -146,15 +128,36 @@ vectorstore = Chroma(
     embedding_function=embedding_model
 )
 
+print("Chroma database loaded successfully!")
+
 
 # ============================================================
-# RETRIEVER
+# 7. CHECK CHROMA DATABASE
+# ============================================================
+
+try:
+
+    collection_count = vectorstore._collection.count()
+
+    print(
+        f"Chroma database contains "
+        f"{collection_count} documents/chunks."
+    )
+
+except Exception as e:
+
+    print(
+        "Could not determine Chroma collection count:",
+        str(e)
+    )
+
+
+# ============================================================
+# 8. CREATE RETRIEVER
 # ============================================================
 
 retriever = vectorstore.as_retriever(
-
     search_type="mmr",
-
     search_kwargs={
         "k": 4,
         "fetch_k": 10,
@@ -164,7 +167,7 @@ retriever = vectorstore.as_retriever(
 
 
 # ============================================================
-# GEMINI LLM
+# 9. GEMINI LLM
 # ============================================================
 
 llm = ChatGoogleGenerativeAI(
@@ -174,124 +177,146 @@ llm = ChatGoogleGenerativeAI(
 
 
 # ============================================================
-# PROMPT
+# 10. RAG PROMPT
 # ============================================================
 
 prompt = ChatPromptTemplate.from_messages(
-
     [
-
-        # ----------------------------------------------------
-        # SYSTEM PROMPT
-        # ----------------------------------------------------
-
         (
             "system",
-
             """
 You are an AI College Study Assistant.
 
-Answer the student's question using ONLY the provided
-context from the uploaded study document.
+Answer the student's question using ONLY the information
+provided in the document context below.
 
 Rules:
 
-1. Use only information available in the context.
+1. Use only the provided document context.
+2. Do not invent information.
+3. If the answer is not present in the context, reply exactly:
 
-2. Do not invent or make up information.
+I could not find the answer in the document.
 
-3. If the answer is not available in the context,
-say exactly:
+4. Explain the answer clearly and simply.
+5. Use bullet points when useful.
+6. For educational questions, provide enough explanation
+   for a college student to understand the topic.
 
-"I could not find the answer in the document."
-
-4. Give clear and simple explanations.
-
-5. If the question asks for an explanation,
-explain it step by step when possible.
-
-6. If the question asks for a definition,
-give a clear definition based on the context.
-
-7. Keep the answer easy for a college student to understand.
-"""
-        ),
-
-
-        # ----------------------------------------------------
-        # HUMAN PROMPT
-        # ----------------------------------------------------
-
-        (
-            "human",
-
-            """
-Context:
+DOCUMENT CONTEXT:
 
 {context}
-
-
-Student Question:
-
-{question}
-
-
-Answer:
 """
+        ),
+        (
+            "human",
+            "{question}"
         )
-
     ]
 )
 
 
 # ============================================================
-# REQUEST MODEL
+# 11. HELPER FUNCTION
 # ============================================================
 
-class ChatRequest(BaseModel):
+def normalize_answer(content):
 
-    message: str
+    """
+    Gemini/LangChain can sometimes return different
+    content formats. This function converts them into
+    a normal string.
+    """
+
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+
+        parts = []
+
+        for item in content:
+
+            if isinstance(item, str):
+
+                parts.append(item)
+
+            elif isinstance(item, dict):
+
+                if "text" in item:
+                    parts.append(str(item["text"]))
+
+                elif "content" in item:
+                    parts.append(str(item["content"]))
+
+                else:
+                    parts.append(str(item))
+
+            else:
+
+                parts.append(str(item))
+
+        return "\n".join(parts)
+
+    if isinstance(content, dict):
+
+        if "text" in content:
+            return str(content["text"])
+
+        if "content" in content:
+            return str(content["content"])
+
+        return str(content)
+
+    return str(content)
 
 
 # ============================================================
-# ROOT ENDPOINT
+# 12. HOME ROUTE
 # ============================================================
 
 @app.get("/")
 def home():
 
     return {
-
-        "message":
-        "AI College Study Assistant API is running!"
-
+        "message": "AI College Study Assistant API is running!"
     }
 
 
 # ============================================================
-# HEALTH CHECK
+# 13. HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
 def health():
 
+    try:
+
+        count = vectorstore._collection.count()
+
+    except Exception:
+
+        count = "unknown"
+
     return {
-
-        "status":
-        "healthy",
-
-        "message":
-        "RAG backend is running correctly."
-
+        "status": "healthy",
+        "service": "AI College Study Assistant",
+        "vector_database": "Chroma",
+        "embedding_model": "BAAI/bge-small-en-v1.5",
+        "llm": "Gemini 3.6 Flash",
+        "document_count": count
     }
 
 
 # ============================================================
-# CHAT ENDPOINT
+# 14. CHAT API
 # ============================================================
 
 @app.post("/api/chat")
-def chat(request: ChatRequest):
+async def chat(data: dict):
 
     try:
 
@@ -299,81 +324,152 @@ def chat(request: ChatRequest):
         # GET USER QUESTION
         # ----------------------------------------------------
 
-        question = request.message.strip()
+        user_message = data.get("message", "")
 
-
-        # ----------------------------------------------------
-        # CHECK EMPTY QUESTION
-        # ----------------------------------------------------
-
-        if not question:
+        if not user_message:
 
             return {
-
-                "response":
-                "Please enter a question."
-
+                "error": "Please provide a message."
             }
 
 
+        print("\n")
+        print("=" * 60)
+        print("NEW CHAT REQUEST")
+        print("=" * 60)
+
+        print("User question:")
+        print(user_message)
+
+
         # ----------------------------------------------------
-        # SEARCH CHROMA
+        # CHROMA COUNT
         # ----------------------------------------------------
 
-        documents = retriever.invoke(
-            question
+        try:
+
+            chroma_count = vectorstore._collection.count()
+
+        except Exception:
+
+            chroma_count = "unknown"
+
+
+        print("\nChroma document count:")
+        print(chroma_count)
+
+
+        # ----------------------------------------------------
+        # RETRIEVE DOCUMENTS
+        # ----------------------------------------------------
+
+        print("\nSearching Chroma database...")
+
+        docs = retriever.invoke(user_message)
+
+
+        # ----------------------------------------------------
+        # RAG DEBUGGING
+        # ----------------------------------------------------
+
+        print("\n")
+        print("=" * 60)
+        print("RAG DEBUG")
+        print("=" * 60)
+
+        print(
+            "Chroma document count:",
+            chroma_count
+        )
+
+        print(
+            "Retrieved documents:",
+            len(docs)
         )
 
 
+        for i, doc in enumerate(docs):
+
+            print("\n")
+            print("-" * 60)
+
+            print(
+                f"Retrieved document {i + 1}"
+            )
+
+            print("-" * 60)
+
+            print(
+                doc.page_content[:1000]
+            )
+
+            print("\nMetadata:")
+
+            print(
+                doc.metadata
+            )
+
+
+        print("=" * 60)
+        print("END RAG DEBUG")
+        print("=" * 60)
+
+
         # ----------------------------------------------------
-        # CHECK SEARCH RESULTS
+        # NO DOCUMENTS FOUND
         # ----------------------------------------------------
 
-        if not documents:
+        if not docs:
+
+            print(
+                "\nWARNING: No documents were retrieved."
+            )
 
             return {
-
                 "response":
-                "I could not find the answer in the document."
-
+                    "I could not find the answer in the document."
             }
 
 
         # ----------------------------------------------------
-        # CREATE CONTEXT
+        # BUILD CONTEXT
         # ----------------------------------------------------
 
         context_parts = []
 
-
-        for document in documents:
+        for i, doc in enumerate(docs):
 
             context_parts.append(
-                document.page_content
+                f"""
+--- Document Chunk {i + 1} ---
+
+{doc.page_content}
+"""
             )
 
 
-        context = "\n\n".join(
-            context_parts
+        context = "\n".join(context_parts)
+
+
+        # ----------------------------------------------------
+        # DEBUG CONTEXT LENGTH
+        # ----------------------------------------------------
+
+        print("\nContext length:")
+
+        print(
+            len(context),
+            "characters"
         )
 
 
         # ----------------------------------------------------
-        # CREATE FINAL PROMPT
+        # CREATE PROMPT
         # ----------------------------------------------------
 
-        final_prompt = prompt.invoke(
-
-            {
-
-                "context":
-                context,
-
-                "question":
-                question
-
-            }
-
+        messages = prompt.format_messages(
+            context=context,
+            question=user_message
         )
 
 
@@ -381,165 +477,83 @@ def chat(request: ChatRequest):
         # CALL GEMINI
         # ----------------------------------------------------
 
-        result = llm.invoke(
-            final_prompt
-        )
+        print("\nCalling Gemini...")
+
+        result = llm.invoke(messages)
 
 
         # ----------------------------------------------------
-        # GET GEMINI RESPONSE
+        # NORMALIZE GEMINI RESPONSE
         # ----------------------------------------------------
 
-        answer = result.content
+        answer = normalize_answer(
+            result.content
+        ).strip()
+
+
+        print("\nGemini response:")
+
+        print(answer)
 
 
         # ----------------------------------------------------
-        # CONVERT RESPONSE TO TEXT
+        # FALLBACK
         # ----------------------------------------------------
 
-        if isinstance(answer, str):
+        if not answer:
 
-            final_answer = answer
-
-
-        elif isinstance(answer, list):
-
-            text_parts = []
-
-
-            for item in answer:
-
-                if isinstance(item, str):
-
-                    text_parts.append(
-                        item
-                    )
-
-
-                elif isinstance(item, dict):
-
-                    if "text" in item:
-
-                        text_parts.append(
-                            str(item["text"])
-                        )
-
-                    else:
-
-                        text_parts.append(
-                            str(item)
-                        )
-
-
-                else:
-
-                    text_parts.append(
-                        str(item)
-                    )
-
-
-            final_answer = "\n".join(
-                text_parts
+            answer = (
+                "I could not find the answer in the document."
             )
 
 
-        elif isinstance(answer, dict):
-
-            if "text" in answer:
-
-                final_answer = str(
-                    answer["text"]
-                )
-
-            else:
-
-                final_answer = str(
-                    answer
-                )
-
-
-        else:
-
-            final_answer = str(
-                answer
-            )
+        print("\n")
+        print("=" * 60)
+        print("REQUEST COMPLETED")
+        print("=" * 60)
 
 
         # ----------------------------------------------------
-        # RETURN ANSWER
+        # RETURN RESPONSE
         # ----------------------------------------------------
 
         return {
-
-            "response":
-            final_answer
-
+            "response": answer
         }
 
-
-    # ========================================================
-    # ERROR HANDLING
-    # ========================================================
 
     except Exception as e:
 
-        print()
+        print("\n")
         print("=" * 60)
-        print("ERROR WHILE PROCESSING QUESTION")
+        print("ERROR")
         print("=" * 60)
+
         print(str(e))
+
         print("=" * 60)
-        print()
 
 
         return {
-
-            "error":
-            str(e),
-
+            "error": str(e),
             "response":
-            "Sorry, something went wrong while processing your question."
-
+                "Sorry, something went wrong while processing your question."
         }
 
 
 # ============================================================
-# STARTUP MESSAGE
+# 15. STARTUP INFORMATION
 # ============================================================
 
-@app.on_event("startup")
-def startup_event():
+print("\n")
+print("=" * 60)
+print("       AI COLLEGE STUDY ASSISTANT")
+print("=" * 60)
 
-    print()
+print("Backend      : FastAPI")
+print("Vector DB    : Chroma")
+print("Embeddings   : FastEmbed")
+print("Embedding    : BAAI/bge-small-en-v1.5")
+print("LLM          : Gemini 3.6 Flash")
 
-    print("=" * 60)
-    print("       AI COLLEGE STUDY ASSISTANT")
-    print("=" * 60)
-
-    print()
-
-    print("Backend      : FastAPI")
-    print("Vector DB    : Chroma")
-    print("Embeddings   : FastEmbed")
-    print("Embedding    : BAAI/bge-small-en-v1.5")
-    print("LLM          : Gemini 3.6 Flash")
-
-    print()
-
-    print(
-        "API          : http://127.0.0.1:8000"
-    )
-
-    print(
-        "Swagger Docs : http://127.0.0.1:8000/docs"
-    )
-
-    print(
-        "Chat API     : http://127.0.0.1:8000/api/chat"
-    )
-
-    print()
-
-    print("=" * 60)
-
-    print()
+print("=" * 60)
